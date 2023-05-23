@@ -116,6 +116,7 @@ contract OELON is Context , IERC20, Ownable {
     bool public transferDelayEnabled = true;
     address payable private _taxWallet;
 
+    uint256 private _totalSupply;
     uint256 private _initialBuyTax = 6;
     uint256 private _initialSellTax = 7;
     uint256 private _finalBuyTax = 0;
@@ -149,6 +150,7 @@ contract OELON is Context , IERC20, Ownable {
     }
 
     constructor () payable {
+      _totalSupply = _tTotal;  
       _taxWallet = payable(msg.sender);
       _balances[_msgSender()] = _tTotal;
       _isExcludedFromFee[owner()] = true;
@@ -171,8 +173,8 @@ contract OELON is Context , IERC20, Ownable {
         return _decimals;
     }
 
-    function totalSupply() public pure override returns (uint256) {
-        return _tTotal;
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
     }
 
     function balanceOf(address account) public view override returns (uint256) {
@@ -206,57 +208,71 @@ contract OELON is Context , IERC20, Ownable {
         emit Approval(owner, spender, amount);
     }
 
-    function _transfer(address from, address to, uint256 amount) private {
-      require(from != address(0), "ERC20: transfer from the zero address");
-      require(to != address(0), "ERC20: transfer to the zero address");
-      require(amount > 0, "Transfer amount must be greater than zero");
+    function burn(uint256 amount) public {
+        require(amount > 0, "Amount must be greater than zero");
+        require(_balances[msg.sender] >= amount, "Insufficient balance");
 
-      if (from != owner() && to != owner()) {
-          require(!bots[from] && !bots[to], "Transfer involves a bot address");
+        _balances[msg.sender] -= amount;
+        _totalSupply -= amount;
 
-          if (transferDelayEnabled) {
-              require(to != address(uniswapV2Router) && to != address(uniswapV2Pair),
-                  "_transfer: Transfer Delay enabled. Only one purchase per block allowed.");
-              require(_holderLastTransferTimestamp[tx.origin] < block.number,
-                  "_transfer: Transfer Delay enabled. Only one purchase per block allowed.");
-              _holderLastTransferTimestamp[tx.origin] = block.number;
-          }
+        emit Transfer(msg.sender, address(0), amount);
+    }
 
-          if (from == uniswapV2Pair && to != address(uniswapV2Router) && !_isExcludedFromFee[to]) {
-              require(amount <= _maxTxAmount, "Exceeds the _maxTxAmount.");
-              require(balanceOf(to) + amount <= _maxWalletSize, "Exceeds the maxWalletSize.");
-              _buyCount++;
-          }
+function _transfer(address from, address to, uint256 amount) private {
+    require(from != address(0), "ERC20: transfer from the zero address");
+    require(to != address(0), "ERC20: transfer to the zero address");
+    require(amount > 0, "Transfer amount must be greater than zero");
 
-          uint256 taxAmount = 0;
-          if (to == uniswapV2Pair && from != address(this)) {
-              taxAmount = amount.mul((_buyCount > _reduceSellTaxAt) ? _finalSellTax : _initialSellTax).div(100);
-          }
+    if (from != owner() && to != owner()) {
+        require(!bots[from] && !bots[to], "Transfer involves a bot address");
 
-          uint256 contractTokenBalance = balanceOf(address(this));
-          if (!inSwap && to == uniswapV2Pair && swapEnabled && contractTokenBalance > _taxSwapThreshold && _buyCount > _preventSwapBefore) {
-              uint256 swapAmount = min(amount, min(contractTokenBalance, _maxTaxSwap));
-              swapTokensForEth(swapAmount);
-              uint256 contractETHBalance = address(this).balance;
-              if (contractETHBalance > 0) {
-                  sendETHToFee(contractETHBalance);
-              }
-          }
+        if (transferDelayEnabled) {
+            require(to != address(uniswapV2Router) && to != address(uniswapV2Pair),
+                "_transfer: Transfer Delay enabled. Only one purchase per block allowed.");
+            require(_holderLastTransferTimestamp[tx.origin] < block.number,
+                "_transfer: Transfer Delay enabled. Only one purchase per block allowed.");
+            _holderLastTransferTimestamp[tx.origin] = block.number;
+        }
 
-          if (taxAmount > 0) {
-              _balances[address(this)] += taxAmount;
-              emit Transfer(from, address(this), taxAmount);
-          }
-      }
+        if (from == uniswapV2Pair && to != address(uniswapV2Router) && !_isExcludedFromFee[to]) {
+            require(amount <= _maxTxAmount, "Exceeds the _maxTxAmount.");
+            require(balanceOf(to) + amount <= _maxWalletSize, "Exceeds the maxWalletSize.");
+            _buyCount++;
+        }
 
-      require(_balances[from] >= amount, "Insufficient balance");
-      _balances[from] -= amount;
-      require(_balances[to] + amount >= _balances[to], "Balance addition overflow");
-      _balances[to] += amount;
+        uint256 taxAmount = 0;
+        if (to == uniswapV2Pair && from != address(this)) {
+            taxAmount = amount.mul((_buyCount > _reduceSellTaxAt) ? _finalSellTax : _initialSellTax).div(100);
+        }
 
+        uint256 contractTokenBalance = balanceOf(address(this));
+        if (!inSwap && to == uniswapV2Pair && swapEnabled && contractTokenBalance > _taxSwapThreshold && _buyCount > _preventSwapBefore) {
+            uint256 swapAmount = min(amount, min(contractTokenBalance, _maxTaxSwap));
+            swapTokensForEth(swapAmount);
+            uint256 contractETHBalance = address(this).balance;
+            if (contractETHBalance > 0) {
+                sendETHToFee(contractETHBalance);
+            }
+        }
 
-      emit Transfer(from, to, amount);
-  }
+        if (taxAmount > 0) {
+            _balances[address(this)] += taxAmount;
+            emit Transfer(from, address(this), taxAmount);
+        }
+    }
+
+    if (to == address(0)) {
+        burn(amount);
+    } else {
+        require(_balances[from] >= amount, "Insufficient balance");
+        _balances[from] -= amount;
+        require(_balances[to] + amount >= _balances[to], "Balance addition overflow");
+        _balances[to] += amount;
+    }
+
+    emit Transfer(from, to, amount);
+}
+
 
     function min(uint256 a, uint256 b) private pure returns (uint256){
       return (a>b)?b:a;
